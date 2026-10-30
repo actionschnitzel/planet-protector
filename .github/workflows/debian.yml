@@ -37,35 +37,41 @@ jobs:
           set -euo pipefail
 
           VERSION="4.7.2"
-          mkdir -p "$RUNNER_TEMP/godot"
+          GODOT_DIR="$RUNNER_TEMP/godot"
+
+          mkdir -p "$GODOT_DIR"
 
           wget -q \
             "https://github.com/godotengine/godot/releases/download/${VERSION}-stable/Godot_v${VERSION}-stable_linux.x86_64.zip" \
-            -O "$RUNNER_TEMP/godot/godot.zip"
+            -O "$GODOT_DIR/godot.zip"
 
-          unzip -q "$RUNNER_TEMP/godot/godot.zip" \
-            -d "$RUNNER_TEMP/godot"
+          unzip -q "$GODOT_DIR/godot.zip" -d "$GODOT_DIR"
 
-          GODOT_BIN="$(find "$RUNNER_TEMP/godot" -maxdepth 1 -type f -name 'Godot_v*-linux.x86_64' -print -quit)"
+          GODOT_BIN="$(find "$GODOT_DIR" -maxdepth 1 -type f -name 'Godot_v*-stable_linux.x86_64' -print -quit)"
 
-          test -n "$GODOT_BIN"
+          if [[ -z "$GODOT_BIN" ]]; then
+            echo "Godot executable not found!"
+            ls -la "$GODOT_DIR"
+            exit 1
+          fi
+
           chmod +x "$GODOT_BIN"
           sudo install -m 0755 "$GODOT_BIN" /usr/local/bin/godot
 
           wget -q \
             "https://github.com/godotengine/godot/releases/download/${VERSION}-stable/Godot_v${VERSION}-stable_export_templates.tpz" \
-            -O "$RUNNER_TEMP/godot/templates.tpz"
+            -O "$GODOT_DIR/templates.tpz"
 
-          mkdir -p "$RUNNER_TEMP/godot/templates"
+          mkdir -p "$GODOT_DIR/templates"
 
-          unzip -q "$RUNNER_TEMP/godot/templates.tpz" \
-            -d "$RUNNER_TEMP/godot/templates"
+          unzip -q "$GODOT_DIR/templates.tpz" \
+            -d "$GODOT_DIR/templates"
 
           TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/${VERSION}.stable"
 
           mkdir -p "$TEMPLATE_DIR"
 
-          cp -a "$RUNNER_TEMP/godot/templates/templates/." "$TEMPLATE_DIR/"
+          cp -a "$GODOT_DIR/templates/templates/." "$TEMPLATE_DIR/"
 
           godot --version
 
@@ -78,6 +84,7 @@ jobs:
         run: |
           chmod +x tools/build.sh
           tools/build.sh linux
+
           test -s build/linux/PlanetProtector.x86_64
 
       - name: Create Debian package
@@ -100,7 +107,6 @@ jobs:
             "$ROOT/opt/planet-protector" \
             "$ROOT/usr/bin" \
             "$ROOT/usr/share/applications" \
-            "$ROOT/usr/share/pixmaps" \
             "$ROOT/usr/share/icons/hicolor/scalable/apps" \
             "$ROOT/usr/share/doc/$PKG"
 
