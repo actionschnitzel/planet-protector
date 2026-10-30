@@ -1,0 +1,180 @@
+
+name: Debian package
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-deb:
+    name: Build Debian package (amd64)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            unzip wget dpkg-dev fakeroot \
+            libgl1 libx11-6 libxcursor1 \
+            libxinerama1 libxrandr2 libxi6 \
+            libasound2t64
+
+      - name: Install Godot 4.7.2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="4.7.2"
+          mkdir -p "$RUNNER_TEMP/godot"
+
+          wget -q \
+            "https://github.com/godotengine/godot/releases/download/${VERSION}-stable/Godot_v${VERSION}-stable_linux.x86_64.zip" \
+            -O "$RUNNER_TEMP/godot/godot.zip"
+
+          unzip -q "$RUNNER_TEMP/godot/godot.zip" \
+            -d "$RUNNER_TEMP/godot"
+
+          GODOT_BIN="$(find "$RUNNER_TEMP/godot" -maxdepth 1 -type f -name 'Godot_v*-linux.x86_64' -print -quit)"
+
+          test -n "$GODOT_BIN"
+          chmod +x "$GODOT_BIN"
+          sudo install -m 0755 "$GODOT_BIN" /usr/local/bin/godot
+
+          wget -q \
+            "https://github.com/godotengine/godot/releases/download/${VERSION}-stable/Godot_v${VERSION}-stable_export_templates.tpz" \
+            -O "$RUNNER_TEMP/godot/templates.tpz"
+
+          mkdir -p "$RUNNER_TEMP/godot/templates"
+
+          unzip -q "$RUNNER_TEMP/godot/templates.tpz" \
+            -d "$RUNNER_TEMP/godot/templates"
+
+          TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/${VERSION}.stable"
+
+          mkdir -p "$TEMPLATE_DIR"
+
+          cp -a "$RUNNER_TEMP/godot/templates/templates/." "$TEMPLATE_DIR/"
+
+          godot --version
+
+      - name: Run project tests
+        run: |
+          godot --headless --path game --editor --quit
+          godot --headless --path game -s res://tests/run_tests.gd
+
+      - name: Build Linux game
+        run: |
+          chmod +x tools/build.sh
+          tools/build.sh linux
+          test -s build/linux/PlanetProtector.x86_64
+
+      - name: Create Debian package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="1.6.0+git${GITHUB_SHA::7}"
+          fi
+
+          ARCH="$(dpkg --print-architecture)"
+          PKG="planet-protector"
+          ROOT="$RUNNER_TEMP/${PKG}-pkg"
+
+          mkdir -p \
+            "$ROOT/DEBIAN" \
+            "$ROOT/opt/planet-protector" \
+            "$ROOT/usr/bin" \
+            "$ROOT/usr/share/applications" \
+            "$ROOT/usr/share/pixmaps" \
+            "$ROOT/usr/share/icons/hicolor/scalable/apps" \
+            "$ROOT/usr/share/doc/$PKG"
+
+          install -m 0755 \
+            build/linux/PlanetProtector.x86_64 \
+            "$ROOT/opt/planet-protector/PlanetProtector.x86_64"
+
+          cat > "$ROOT/usr/bin/planet-protector" <<'EOF'
+          #!/bin/sh
+          exec /opt/planet-protector/PlanetProtector.x86_64 "$@"
+          EOF
+
+          chmod 0755 "$ROOT/usr/bin/planet-protector"
+
+          install -m 0644 game/icon.svg \
+            "$ROOT/usr/share/icons/hicolor/scalable/apps/planet-protector.svg"
+
+          install -m 0644 README.md \
+            "$ROOT/usr/share/doc/$PKG/README.md"
+
+          cat > "$ROOT/usr/share/applications/planet-protector.desktop" <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Planet Protector
+          Comment=Defend the solar system
+          Exec=planet-protector
+          Icon=planet-protector
+          Terminal=false
+          Categories=Game;ArcadeGame;
+          StartupNotify=true
+          EOF
+
+          SHLIB_DEPS="$(dpkg-shlibdeps \
+            -O \
+            -e"$ROOT/opt/planet-protector/PlanetProtector.x86_64" \
+            | sed -n 's/^shlibs:Depends=//p')"
+
+          if [[ -z "$SHLIB_DEPS" ]]; then
+            echo "Could not determine runtime dependencies"
+            exit 1
+          fi
+
+          cat > "$ROOT/DEBIAN/control" <<EOF
+          Package: $PKG
+          Version: $VERSION
+          Section: games
+          Priority: optional
+          Architecture: $ARCH
+          Maintainer: Actionschnitzel
+          Depends: $SHLIB_DEPS
+          Description: Planet Protector - 2D arcade shooter
+           Defend the solar system against waves of enemies.
+           Includes the native Linux build.
+          EOF
+
+          mkdir -p dist
+
+          dpkg-deb --root-owner-group --build \
+            "$ROOT" \
+            "dist/${PKG}_${VERSION}_${ARCH}.deb"
+
+          dpkg-deb --info "dist/${PKG}_${VERSION}_${ARCH}.deb"
+
+      - name: Upload Debian package
+        uses: actions/upload-artifact@v4
+        with:
+          name: planet-protector-debian-amd64
+          path: dist/*.deb
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach package to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.deb
+          fail_on_unmatched_files: true
